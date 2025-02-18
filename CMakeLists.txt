@@ -49,6 +49,7 @@ target_link_libraries(tarefa-adc
         pico_stdlib
         hardware_adc
         hardware_i2c
+        hardware_pwm
         )
 
 # Add the standard include files to the build

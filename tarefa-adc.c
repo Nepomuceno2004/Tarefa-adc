@@ -2,6 +2,7 @@
 #include "pico/stdlib.h"
 #include "hardware/adc.h"
 #include "hardware/i2c.h"
+#include "hardware/pwm.h"
 #include "lib/ssd1306.h"
 #include "lib/font.h"
 
@@ -9,41 +10,43 @@
 #define I2C_SDA 14
 #define I2C_SCL 15
 #define endereco 0x3C
-#define JOYSTICK_X_PIN 26 // GPIO para eixo X
-#define JOYSTICK_Y_PIN 27 // GPIO para eixo Y
-#define JOYSTICK_PB 22    // GPIO para botão do Joystick
 
-// Trecho para modo BOOTSEL com botão B
-#include "pico/bootrom.h"
-#define botaoB 6
-void gpio_irq_handler(uint gpio, uint32_t events)
-{
-    reset_usb_boot(0, 0);
-}
+#define joystick_X 26      // GPIO para eixo X
+#define joystick_Y 27      // GPIO para eixo Y
+#define joystick_Button 22 // GPIO para botão do Joystick
+
+#define LED_RED 13   // LED vermelho (PWM)
+#define LED_BLUE 12  // LED azul (PWM)
+#define LED_GREEN 11 // LED verde (acionado pelo botão do joystick)
+
+#define button_A 5 // BotÃ£o para ativar/desativar LEDs PWM
+
+#define pwm_wrap 4095
+
+volatile bool pwm_enabled = true; // Estado dos LEDs PWM
+volatile uint32_t last_time = 0;
+
+uint pwm_init_gpio(uint gpio, uint wrap);
+uint16_t get_center(uint8_t adc_channel);
+void gpio_irq_handler(uint gpio, uint32_t events);
 
 int main()
 {
     stdio_init_all();
 
-    // Para ser utilizado o modo BOOTSEL com botão B
-    gpio_init(botaoB);
-    gpio_set_dir(botaoB, GPIO_IN);
-    gpio_pull_up(botaoB);
-    gpio_set_irq_enabled_with_callback(botaoB, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
+    gpio_init(button_A);
+    gpio_set_dir(button_A, GPIO_IN);
+    gpio_pull_up(button_A);
 
-    gpio_init(JOYSTICK_PB);
-    gpio_set_dir(JOYSTICK_PB, GPIO_IN);
-    gpio_pull_up(JOYSTICK_PB);
+    gpio_init(LED_GREEN);
+    gpio_set_dir(LED_GREEN, GPIO_OUT);
+    gpio_put(LED_GREEN, 0);
 
-    adc_init();
-    adc_gpio_init(JOYSTICK_X_PIN);
-    adc_gpio_init(JOYSTICK_Y_PIN);
-
-    uint16_t adc_value_x;
-    uint16_t adc_value_y;
+    gpio_init(joystick_Button);
+    gpio_set_dir(joystick_Button, GPIO_IN);
+    gpio_pull_up(joystick_Button);
 
     i2c_init(I2C_PORT, 400 * 1000);
-
     gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);                    // Set the GPIO pin function to I2C
     gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);                    // Set the GPIO pin function to I2C
     gpio_pull_up(I2C_SDA);                                        // Pull up the data line
@@ -57,7 +60,25 @@ int main()
     ssd1306_fill(&ssd, false);
     ssd1306_send_data(&ssd);
 
+    adc_init();
+    adc_gpio_init(joystick_X);
+    adc_gpio_init(joystick_Y);
+
+    uint16_t adc_value_x;
+    uint16_t adc_value_y;
+    uint16_t center_x = get_center(0);
+    uint16_t center_y = get_center(1);
+
+    pwm_init_gpio(LED_RED, pwm_wrap);
+    pwm_init_gpio(LED_BLUE, pwm_wrap);
+
+    gpio_set_irq_enabled_with_callback(joystick_Button, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
+    gpio_set_irq_enabled_with_callback(button_A, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
+
+    uint32_t last_print_time = 0;
     bool cor = true;
+    int borda = 0;
+    volatile uint32_t last_press = 0;
 
     while (true)
     {
@@ -67,20 +88,148 @@ int main()
         adc_select_input(1); // Eixo Y (pino 27)
         adc_value_y = adc_read();
 
-        // Mapeia os valores do ADC (0-4095) para a tela (3-120 para X e 3-56 para Y)
-        // Mapeia os valores do ADC (0-4095) para a tela, garantindo limites
-        int x = (adc_value_x * (128 - 8)) / 2000;
-        int y = (adc_value_y * (64 - 8)) / 2034;
+        // Mapeamento do ADC para a tela, garantindo limites
+        int y = (adc_value_y * 120) / 4095; // Mapeia o eixo X para 120
+        y += 3;                             // Ajusta para começar a partir de 3
 
-        ssd1306_fill(&ssd, !cor);                                        // Limpa o display
-        ssd1306_rect(&ssd, 3, 3, 122, 60, cor, !cor);                    // Desenha o retângulo principal
-        ssd1306_rect(&ssd, 2, 2, 124, 62, !gpio_get(JOYSTICK_PB), !cor); // Segunda camada para engrossar a borda
+        if (y > 120)
+            y = 120; // Limitação para evitar ultrapassar a borda
 
-        // Desenha o quadrado de 8x8 pixels no display na posição calculada
-        ssd1306_rect(&ssd, x, y, 8, 8, cor, cor);
+        int x = 56 - (adc_value_x * 56) / 4095; // Inverte o eixo X
+        x += 3;
 
-        ssd1306_send_data(&ssd); // Atualiza o display
+        if (x > 56)
+            x = 56;
+        if (x < 3)
+            x = 3;
 
-        sleep_ms(50);
+        if (pwm_enabled)
+        {
+            int16_t deviation_x = adc_value_x - center_x;
+            uint16_t pwm_value_red = (abs(deviation_x) > 50) ? abs(deviation_x) * 2 : 0;
+            if (pwm_value_red > pwm_wrap)
+                pwm_value_red = pwm_wrap;
+            pwm_set_gpio_level(LED_RED, pwm_value_red);
+
+            int16_t deviation_y = adc_value_y - center_y;
+            uint16_t pwm_value_blue = (abs(deviation_y) > 50) ? abs(deviation_y) * 2 : 0;
+            if (pwm_value_blue > pwm_wrap)
+                pwm_value_blue = pwm_wrap;
+            pwm_set_gpio_level(LED_BLUE, pwm_value_blue);
+        }
+
+        ssd1306_fill(&ssd, !cor); // Limpa o display
+
+        uint32_t current_time = to_us_since_boot(get_absolute_time());
+
+        if (!gpio_get(joystick_Button))
+        {
+            if (current_time - last_press > 50000) // Debounce do botão
+            {
+                borda = (borda + 1) % 5; // Agora alterna entre 0, 1, 2, 3 e 4
+                last_press = current_time;
+            }
+        }
+
+        // Desenha a borda de acordo com o estado atual
+        if (borda == 0)
+        {
+            ssd1306_rect(&ssd, 2, 2, 124, 62, cor, !cor); // Borda mais espessa
+        }
+        else if (borda == 1)
+        {
+            // Canto arredondado (pequenos segmentos de linha)
+            ssd1306_line(&ssd, 6, 3, 119, 3, cor);    // Topo
+            ssd1306_line(&ssd, 6, 60, 119, 60, cor);  // Base
+            ssd1306_line(&ssd, 3, 6, 3, 57, cor);     // Esquerda
+            ssd1306_line(&ssd, 122, 6, 122, 57, cor); // Direita
+
+            // Pequenos cantos curvados
+            ssd1306_pixel(&ssd, 4, 4, cor);
+            ssd1306_pixel(&ssd, 5, 5, cor);
+            ssd1306_pixel(&ssd, 121, 4, cor);
+            ssd1306_pixel(&ssd, 120, 5, cor);
+            ssd1306_pixel(&ssd, 4, 59, cor);
+            ssd1306_pixel(&ssd, 5, 58, cor);
+            ssd1306_pixel(&ssd, 121, 59, cor);
+            ssd1306_pixel(&ssd, 120, 58, cor);
+        }
+        else if (borda == 2)
+        {
+            ssd1306_line(&ssd, 3, 3, 3, 60, cor);     // Linha vertical esquerda
+            ssd1306_line(&ssd, 123, 3, 123, 60, cor); // Linha vertical direita
+        }
+        else if (borda == 3)
+        {
+            // Apenas bordas horizontais
+            ssd1306_line(&ssd, 3, 3, 122, 3, cor);   // Linha superior
+            ssd1306_line(&ssd, 3, 60, 122, 60, cor); // Linha inferior
+        }
+        else if (borda == 4)
+        {
+            // Borda pontilhada
+            for (int i = 3; i < 123; i += 4)
+            {
+                ssd1306_pixel(&ssd, i, 3, cor);
+                ssd1306_pixel(&ssd, i, 60, cor);
+            }
+            for (int i = 3; i < 60; i += 4)
+            {
+                ssd1306_pixel(&ssd, 3, i, cor);
+                ssd1306_pixel(&ssd, 122, i, cor);
+            }
+        }
+
+        ssd1306_rect(&ssd, x, y, 8, 8, cor, cor); // Desenha o quadrado na posição corrigida
+        ssd1306_send_data(&ssd);                  // Atualiza o display
+
+        sleep_ms(100);
+    }
+}
+
+uint pwm_init_gpio(uint gpio, uint wrap)
+{
+    gpio_set_function(gpio, GPIO_FUNC_PWM);
+    uint slice_num = pwm_gpio_to_slice_num(gpio);
+    pwm_set_wrap(slice_num, wrap);
+    pwm_set_enabled(slice_num, true);
+    return slice_num;
+}
+
+uint16_t get_center(uint8_t adc_channel)
+{
+    uint32_t sum = 0;
+    for (int i = 0; i < 100; i++)
+    {
+        adc_select_input(adc_channel);
+        sum += adc_read();
+        sleep_ms(5);
+    }
+    return sum / 100;
+}
+
+void gpio_irq_handler(uint gpio, uint32_t events)
+{
+    uint32_t current_time = to_us_since_boot(get_absolute_time());
+    if (current_time - last_time > 20000)
+    { // Debounce
+
+        if (gpio == joystick_Button)
+        {
+            gpio_put(LED_GREEN, !gpio_get(LED_GREEN));
+            printf("LED Verde: %s\n", gpio_get(LED_GREEN) ? "ON" : "OFF");
+        }
+        else if (gpio == button_A)
+        {
+            pwm_enabled = !pwm_enabled;
+            if (!pwm_enabled)
+            {
+                pwm_set_gpio_level(LED_RED, 0);
+                pwm_set_gpio_level(LED_BLUE, 0);
+            }
+            printf("PWM: %s\n", pwm_enabled ? "ON" : "OFF");
+        }
+
+        last_time = current_time;
     }
 }
