@@ -61,30 +61,26 @@ int main()
 
     while (true)
     {
-        adc_select_input(0); // Seleciona o ADC para eixo X. O pino 26 como entrada analógica
+        // Leitura do Joystick
+        adc_select_input(0); // Eixo X (pino 26)
         adc_value_x = adc_read();
-        adc_select_input(1); // Seleciona o ADC para eixo Y. O pino 27 como entrada analógica
+        adc_select_input(1); // Eixo Y (pino 27)
         adc_value_y = adc_read();
 
-        printf("valor do X %d\n", adc_value_x);
-        printf("valor do y %d\n\n", adc_value_y);
+        // Mapeia os valores do ADC (0-4095) para a tela (3-120 para X e 3-56 para Y)
+        // Mapeia os valores do ADC (0-4095) para a tela, garantindo limites
+        int x = (adc_value_x * (128 - 8)) / 2000;
+        int y = (adc_value_y * (64 - 8)) / 2034;
 
-        /*ssd1306_fill(&ssd, !cor);                                      // Limpa o display
-        ssd1306_rect(&ssd, 3, 3, 122, 60, cor, !cor);                  // Desenha um retângulo
-        ssd1306_rect(&ssd, 3, 3, 122, 60, !gpio_get(JOYSTICK_PB), !cor); // Desenha um retângulo
-        ssd1306_send_data(&ssd);    */
-        // Atualiza o display
+        ssd1306_fill(&ssd, !cor);                                        // Limpa o display
+        ssd1306_rect(&ssd, 3, 3, 122, 60, cor, !cor);                    // Desenha o retângulo principal
+        ssd1306_rect(&ssd, 2, 2, 124, 62, !gpio_get(JOYSTICK_PB), !cor); // Segunda camada para engrossar a borda
 
-        ssd1306_fill(&ssd, !cor);                     // Limpa o display
-        ssd1306_rect(&ssd, 3, 3, 122, 60, cor, !cor); // Desenha o retângulo principal
-
-        if (!gpio_get(JOYSTICK_PB))
-        {                                                 // Se o botão estiver pressionado
-            ssd1306_rect(&ssd, 2, 2, 124, 64, cor, !cor); // Segunda camada para engrossar a borda
-        }
+        // Desenha o quadrado de 8x8 pixels no display na posição calculada
+        ssd1306_rect(&ssd, x, y, 8, 8, cor, cor);
 
         ssd1306_send_data(&ssd); // Atualiza o display
 
-        sleep_ms(100);
+        sleep_ms(50);
     }
 }
