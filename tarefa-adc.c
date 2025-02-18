@@ -106,13 +106,14 @@ int main()
         if (pwm_enabled)
         {
             int16_t deviation_x = adc_value_x - center_x;
-            uint16_t pwm_value_red = (abs(deviation_x) > 50) ? abs(deviation_x) * 2 : 0;
+            int16_t deviation_y = adc_value_y - center_y;
+
+            uint16_t pwm_value_red = (abs(deviation_y) > 50) ? abs(deviation_y) * 2 : 0;
             if (pwm_value_red > pwm_wrap)
                 pwm_value_red = pwm_wrap;
             pwm_set_gpio_level(LED_RED, pwm_value_red);
 
-            int16_t deviation_y = adc_value_y - center_y;
-            uint16_t pwm_value_blue = (abs(deviation_y) > 50) ? abs(deviation_y) * 2 : 0;
+            uint16_t pwm_value_blue = (abs(deviation_x) > 50) ? abs(deviation_x) * 2 : 0;
             if (pwm_value_blue > pwm_wrap)
                 pwm_value_blue = pwm_wrap;
             pwm_set_gpio_level(LED_BLUE, pwm_value_blue);
@@ -120,52 +121,12 @@ int main()
 
         ssd1306_fill(&ssd, !cor); // Limpa o display
 
-        uint32_t current_time = to_us_since_boot(get_absolute_time());
-
-        if (!gpio_get(joystick_Button))
-        {
-            if (current_time - last_press > 50000) // Debounce do botão
-            {
-                borda = (borda + 1) % 5; // Agora alterna entre 0, 1, 2, 3 e 4
-                last_press = current_time;
-            }
-        }
-
         // Desenha a borda de acordo com o estado atual
-        if (borda == 0)
+        if (!gpio_get(LED_GREEN))
         {
             ssd1306_rect(&ssd, 2, 2, 124, 62, cor, !cor); // Borda mais espessa
         }
-        else if (borda == 1)
-        {
-            // Canto arredondado (pequenos segmentos de linha)
-            ssd1306_line(&ssd, 6, 3, 119, 3, cor);    // Topo
-            ssd1306_line(&ssd, 6, 60, 119, 60, cor);  // Base
-            ssd1306_line(&ssd, 3, 6, 3, 57, cor);     // Esquerda
-            ssd1306_line(&ssd, 122, 6, 122, 57, cor); // Direita
-
-            // Pequenos cantos curvados
-            ssd1306_pixel(&ssd, 4, 4, cor);
-            ssd1306_pixel(&ssd, 5, 5, cor);
-            ssd1306_pixel(&ssd, 121, 4, cor);
-            ssd1306_pixel(&ssd, 120, 5, cor);
-            ssd1306_pixel(&ssd, 4, 59, cor);
-            ssd1306_pixel(&ssd, 5, 58, cor);
-            ssd1306_pixel(&ssd, 121, 59, cor);
-            ssd1306_pixel(&ssd, 120, 58, cor);
-        }
-        else if (borda == 2)
-        {
-            ssd1306_line(&ssd, 3, 3, 3, 60, cor);     // Linha vertical esquerda
-            ssd1306_line(&ssd, 123, 3, 123, 60, cor); // Linha vertical direita
-        }
-        else if (borda == 3)
-        {
-            // Apenas bordas horizontais
-            ssd1306_line(&ssd, 3, 3, 122, 3, cor);   // Linha superior
-            ssd1306_line(&ssd, 3, 60, 122, 60, cor); // Linha inferior
-        }
-        else if (borda == 4)
+        else
         {
             // Borda pontilhada
             for (int i = 3; i < 123; i += 4)
